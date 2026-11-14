@@ -1,0 +1,82 @@
+# Builds a stripped, statically linked dwg2dxf for one Heroku stack and publishes it as a release asset,
+# which bin/compile downloads (by URL and SHA-256) instead of compiling LibreDWG on every new build cache.
+# Run it by hand (Actions -> Build dwg2dxf -> Run workflow) when the LibreDWG version or the stack changes,
+# then put the printed URL and SHA-256 in bin/compile.
+name: Build dwg2dxf
+on:
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: Heroku stack number (heroku-<n>)
+        default: "26"
+permissions:
+  contents: write
+env:
+  VERSION: "0.14"
+  SHA256: cb6ee0b078c6d9e0f09d66f1feac33ba6342df88ae544e9f9335fab475218351
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: heroku/heroku:${{ inputs.stack }}-build_linux-amd64
+      options: --user root
+    steps:
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp
+          curl -fsSL --retry 3 -o libredwg.tar.gz "https://ftpmirror.gnu.org/libredwg/libredwg-$VERSION.tar.gz"
+          echo "$SHA256  libredwg.tar.gz" | sha256sum -c -
+          tar xzf libredwg.tar.gz
+          cd "libredwg-$VERSION"
+          ./configure --disable-shared --enable-static --disable-bindings --disable-python --disable-docs > /dev/null
+          make -j"$(nproc)" > /dev/null
+          strip programs/dwg2dxf
+          if ldd programs/dwg2dxf | grep -q libredwg; then echo "dwg2dxf links a shared libredwg" >&2; exit 1; fi
+          ldd programs/dwg2dxf
+          mkdir -p /tmp/out/bin
+          cp programs/dwg2dxf /tmp/out/bin/
+          cp COPYING /tmp/out/COPYING
+          name="dwg2dxf-$VERSION-heroku-${{ inputs.stack }}.tar.gz"
+          tar czf "/tmp/$name" -C /tmp/out .
+          echo "NAME=$name" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dwg2dxf
+          path: /tmp/${{ env.NAME }}
+  check:
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: heroku/heroku:${{ inputs.stack }}_linux-amd64
+      options: --user root
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dwg2dxf
+      - name: Runs on the stack's run image
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar xzf dwg2dxf-*.tar.gz
+          ./bin/dwg2dxf --version | grep -x "dwg2dxf $VERSION"
+  release:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dwg2dxf
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          file=$(ls dwg2dxf-*.tar.gz)
+          tag="${file%.tar.gz}"
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" "$file" --repo "$GITHUB_REPOSITORY" --title "$tag" \
+            --notes "dwg2dxf from GNU LibreDWG $VERSION (GPL-3.0-or-later; source https://ftpmirror.gnu.org/libredwg/libredwg-$VERSION.tar.gz), built statically on heroku/heroku:${{ inputs.stack }}-build."
+          echo "URL: https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$file"
+          echo "SHA-256: $(sha256sum "$file" | cut -d' ' -f1)"
