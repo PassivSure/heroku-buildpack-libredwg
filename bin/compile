@@ -1,37 +1,40 @@
 #!/usr/bin/env bash
-# Builds LibreDWG 0.14 (dwg2dxf) into the slug at vendor/libredwg, cached between builds.
-# This directory is the buildpack's source: publish it as its own repository
-# (release runbook, "DWG plan sets (2026-11)"), since Heroku can't use a subdirectory as a buildpack.
+# Installs a prebuilt dwg2dxf (GNU LibreDWG 0.14) into the slug at vendor/libredwg/bin.
+# The binary is stripped and statically linked to libredwg, built on the stack's own build image by
+# .github/workflows/build-dwg2dxf.yml in https://github.com/PassivSure/heroku-buildpack-libredwg and
+# published as a release there; this script only downloads it and checks its SHA-256.
+# This directory is the buildpack's source in ps-rails; copy changes to that repository's root
+# (release runbook, "DWG plan sets (2026-11)").
 set -euo pipefail
 BUILD_DIR="$1"; CACHE_DIR="$2"
 VERSION=0.14
-SHA256=cb6ee0b078c6d9e0f09d66f1feac33ba6342df88ae544e9f9335fab475218351
-# Static: the binary carries libredwg, so it runs from the build directory (/tmp/build_*) during the check
-# below and from /app at runtime, where the app runs it with an emptied environment (no LD_LIBRARY_PATH).
-CACHED="$CACHE_DIR/libredwg-$VERSION-static"
+declare -A URLS=( [heroku-26]="https://github.com/PassivSure/heroku-buildpack-libredwg/releases/download/dwg2dxf-0.14-heroku-26/dwg2dxf-0.14-heroku-26.tar.gz" )
+declare -A SHAS=( [heroku-26]="987835b9b394f7ef4c86821edb876a5497d2cc411a54db2ca18bff4914c496d6" )
 
-if [ ! -x "$CACHED/bin/dwg2dxf" ]; then
-  echo "-----> Building LibreDWG $VERSION"
-  tmp=$(mktemp -d)
-  curl -fsSL --retry 3 -o "$tmp/libredwg.tar.gz" "https://ftpmirror.gnu.org/libredwg/libredwg-$VERSION.tar.gz"
-  echo "$SHA256  $tmp/libredwg.tar.gz" | sha256sum -c -
-  tar xzf "$tmp/libredwg.tar.gz" -C "$tmp"
-  (cd "$tmp/libredwg-$VERSION" &&
-    ./configure --prefix=/app/vendor/libredwg --disable-shared --enable-static --disable-bindings --disable-python --disable-docs > /dev/null &&
-    make -j"$(nproc)" > /dev/null &&
-    make install DESTDIR="$tmp/out" > /dev/null)
-  rm -rf "$CACHED"; mkdir -p "$CACHED"
-  cp -R "$tmp/out/app/vendor/libredwg/." "$CACHED/"
+url="${URLS[${STACK:-}]:-}"
+if [ -z "$url" ]; then
+  echo " !     No prebuilt dwg2dxf $VERSION for stack '${STACK:-unknown}'." >&2
+  echo " !     Run the 'Build dwg2dxf' workflow in PassivSure/heroku-buildpack-libredwg for it and add it to bin/compile." >&2
+  exit 1
+fi
+sha="${SHAS[$STACK]}"
+cached="$CACHE_DIR/dwg2dxf-$sha.tar.gz"
+
+if [ -f "$cached" ] && echo "$sha  $cached" | sha256sum -c - > /dev/null 2>&1; then
+  echo "-----> Using cached dwg2dxf $VERSION"
 else
-  echo "-----> Using cached LibreDWG $VERSION"
+  echo "-----> Downloading dwg2dxf $VERSION for $STACK"
+  rm -f "$CACHE_DIR"/dwg2dxf-*.tar.gz
+  mkdir -p "$CACHE_DIR"
+  curl -fsSL --retry 3 -o "$cached.part" "$url"
+  echo "$sha  $cached.part" | sha256sum -c -
+  mv "$cached.part" "$cached"
 fi
 
+rm -rf "$BUILD_DIR/vendor/libredwg"
 mkdir -p "$BUILD_DIR/vendor/libredwg" "$BUILD_DIR/.profile.d"
-cp -R "$CACHED/." "$BUILD_DIR/vendor/libredwg/"
+tar xzf "$cached" -C "$BUILD_DIR/vendor/libredwg"
 cat > "$BUILD_DIR/.profile.d/libredwg.sh" <<'PROFILE'
 export PATH="$HOME/vendor/libredwg/bin:$PATH"
 PROFILE
-if ldd "$BUILD_DIR/vendor/libredwg/bin/dwg2dxf" | grep -q libredwg; then
-  echo " !     dwg2dxf is linked to a shared libredwg; expected a static build" >&2; exit 1
-fi
 "$BUILD_DIR/vendor/libredwg/bin/dwg2dxf" --version

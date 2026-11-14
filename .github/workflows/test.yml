@@ -1,0 +1,37 @@
+# Runs bin/compile as Heroku would, on the stack's build image: a fresh cache, then the cached path,
+# then checks the installed binary on the run image.
+name: Test
+on: [push, pull_request]
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    container:
+      image: heroku/heroku:26-build_linux-amd64
+      options: --user root
+    env:
+      STACK: heroku-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fresh cache
+        run: bin/compile /tmp/build /tmp/cache /tmp/env
+      - name: Cached
+        run: bin/compile /tmp/build /tmp/cache /tmp/env | tee /tmp/second.log && grep -q "Using cached" /tmp/second.log
+      - name: Unknown stack refused
+        run: "! STACK=heroku-99 bin/compile /tmp/build2 /tmp/cache2 /tmp/env"
+      - name: Profile puts it on PATH
+        run: cd /tmp/build && HOME=/tmp/build bash -c '. .profile.d/libredwg.sh && dwg2dxf --version' | grep -x "dwg2dxf 0.14"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slug
+          path: /tmp/build/vendor/libredwg
+  run-image:
+    needs: compile
+    runs-on: ubuntu-latest
+    container:
+      image: heroku/heroku:26_linux-amd64
+      options: --user root
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: slug
+      - run: chmod +x bin/dwg2dxf && ./bin/dwg2dxf --version | grep -x "dwg2dxf 0.14"
