@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Builds LibreDWG 0.14 (dwg2dxf) into the slug at vendor/libredwg, cached between builds.
+# This directory is the buildpack's source: publish it as its own repository
+# (release runbook, "DWG plan sets (2026-11)"), since Heroku can't use a subdirectory as a buildpack.
+set -euo pipefail
+BUILD_DIR="$1"; CACHE_DIR="$2"
+VERSION=0.14
+SHA256=cb6ee0b078c6d9e0f09d66f1feac33ba6342df88ae544e9f9335fab475218351
+CACHED="$CACHE_DIR/libredwg-$VERSION"
+
+if [ ! -x "$CACHED/bin/dwg2dxf" ]; then
+  echo "-----> Building LibreDWG $VERSION"
+  tmp=$(mktemp -d)
+  curl -fsSL --retry 3 -o "$tmp/libredwg.tar.gz" "https://ftpmirror.gnu.org/libredwg/libredwg-$VERSION.tar.gz"
+  echo "$SHA256  $tmp/libredwg.tar.gz" | sha256sum -c -
+  tar xzf "$tmp/libredwg.tar.gz" -C "$tmp"
+  (cd "$tmp/libredwg-$VERSION" &&
+    ./configure --prefix=/app/vendor/libredwg --disable-bindings --disable-python --disable-docs > /dev/null &&
+    make -j"$(nproc)" > /dev/null &&
+    make install DESTDIR="$tmp/out" > /dev/null)
+  rm -rf "$CACHED"; mkdir -p "$CACHED"
+  cp -R "$tmp/out/app/vendor/libredwg/." "$CACHED/"
+else
+  echo "-----> Using cached LibreDWG $VERSION"
+fi
+
+mkdir -p "$BUILD_DIR/vendor/libredwg" "$BUILD_DIR/.profile.d"
+cp -R "$CACHED/." "$BUILD_DIR/vendor/libredwg/"
+cat > "$BUILD_DIR/.profile.d/libredwg.sh" <<'PROFILE'
+export PATH="$HOME/vendor/libredwg/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/vendor/libredwg/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+PROFILE
+"$BUILD_DIR/vendor/libredwg/bin/dwg2dxf" --version

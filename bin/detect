@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Always applies: the app reads uploaded DWG plan sets with dwg2dxf.
+echo "LibreDWG"
+exit 0
