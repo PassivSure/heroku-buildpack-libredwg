@@ -6,7 +6,9 @@ set -euo pipefail
 BUILD_DIR="$1"; CACHE_DIR="$2"
 VERSION=0.14
 SHA256=cb6ee0b078c6d9e0f09d66f1feac33ba6342df88ae544e9f9335fab475218351
-CACHED="$CACHE_DIR/libredwg-$VERSION"
+# Static: the binary carries libredwg, so it runs from the build directory (/tmp/build_*) during the check
+# below and from /app at runtime, where the app runs it with an emptied environment (no LD_LIBRARY_PATH).
+CACHED="$CACHE_DIR/libredwg-$VERSION-static"
 
 if [ ! -x "$CACHED/bin/dwg2dxf" ]; then
   echo "-----> Building LibreDWG $VERSION"
@@ -15,7 +17,7 @@ if [ ! -x "$CACHED/bin/dwg2dxf" ]; then
   echo "$SHA256  $tmp/libredwg.tar.gz" | sha256sum -c -
   tar xzf "$tmp/libredwg.tar.gz" -C "$tmp"
   (cd "$tmp/libredwg-$VERSION" &&
-    ./configure --prefix=/app/vendor/libredwg --disable-bindings --disable-python --disable-docs > /dev/null &&
+    ./configure --prefix=/app/vendor/libredwg --disable-shared --enable-static --disable-bindings --disable-python --disable-docs > /dev/null &&
     make -j"$(nproc)" > /dev/null &&
     make install DESTDIR="$tmp/out" > /dev/null)
   rm -rf "$CACHED"; mkdir -p "$CACHED"
@@ -28,6 +30,8 @@ mkdir -p "$BUILD_DIR/vendor/libredwg" "$BUILD_DIR/.profile.d"
 cp -R "$CACHED/." "$BUILD_DIR/vendor/libredwg/"
 cat > "$BUILD_DIR/.profile.d/libredwg.sh" <<'PROFILE'
 export PATH="$HOME/vendor/libredwg/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/vendor/libredwg/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 PROFILE
+if ldd "$BUILD_DIR/vendor/libredwg/bin/dwg2dxf" | grep -q libredwg; then
+  echo " !     dwg2dxf is linked to a shared libredwg; expected a static build" >&2; exit 1
+fi
 "$BUILD_DIR/vendor/libredwg/bin/dwg2dxf" --version
